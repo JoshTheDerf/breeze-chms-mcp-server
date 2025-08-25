@@ -7,14 +7,14 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import axios, { AxiosRequestConfig } from "axios";
+import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 
 /**
  * MCP Server for Breeze ChMS API
- * 
+ *
  * This server provides access to the Breeze Church Management System API,
  * allowing integration with people management, events, contributions, and more.
- * 
+ *
  * Required environment variables:
  * - BREEZE_SUBDOMAIN: Your Breeze subdomain (e.g., "mychurch" for mychurch.breezechms.com)
  * - BREEZE_API_KEY: Your Breeze API key (from Extensions > API page)
@@ -25,6 +25,8 @@ class BreezeChMSServer {
   private subdomain: string;
   private apiKey: string;
   private baseUrl: string;
+  private debug: boolean;
+  private apiClient: AxiosInstance;
 
   constructor() {
     this.server = new Server(
@@ -43,30 +45,467 @@ class BreezeChMSServer {
     this.subdomain = process.env.BREEZE_SUBDOMAIN || "";
     this.apiKey = process.env.BREEZE_API_KEY || "";
     this.baseUrl = `https://${this.subdomain}.breezechms.com/api`;
+    this.debug = (process.env.BREEZE_DEBUG === "1") || ((process.env.DEBUG?.toLowerCase()?.includes("breeze")) ?? false);
+    this.apiClient = axios.create({
+      baseURL: this.baseUrl.endsWith('/') ? this.baseUrl : `${this.baseUrl}/`,
+      headers: { 'Api-Key': this.apiKey },
+      timeout: 30000,
+    });
 
     if (!this.subdomain || !this.apiKey) {
       console.error("BREEZE_SUBDOMAIN and BREEZE_API_KEY environment variables are required");
       process.exit(1);
     }
 
+    if (this.debug) {
+      console.error(`[Breeze] Initialized with baseUrl=${this.apiClient.defaults.baseURL} subdomain=${this.subdomain}`);
+    }
+
     this.setupToolHandlers();
+  }
+
+  private maskApiKey(key: string): string {
+    if (!key) return "<missing>";
+    const last4 = key.slice(-4);
+    return `***${last4}`;
+  }
+
+  private getSystemPrompt(): string {
+    return `# Comprehensive Breeze ChMS API System Prompt
+
+## Core Understanding
+
+You are a Breeze ChMS API specialist with access to a Breeze Church Management System database. This system manages church membership, events, contributions, and more. Understanding API limitations and best practices is crucial for successful operations.
+
+## Critical Search Limitations
+
+### **Name Searches Don't Work with Simple Strings**
+- ❌ **WRONG**: \`{"name": "John Smith"}\`, \`{"first_name": "John"}\`, \`{"last": "Smith"}\`
+- The API does **NOT** support simple text searches in \`filter_json\`
+- You cannot search by name directly without field IDs
+
+### **Person Not Found Scenarios**
+When someone cannot be found, consider:
+- **Alternate spellings**: Joshua vs Josh, MacDonald vs McDonald
+- **Name changes**: Marriage, legal changes, preferred names
+- **Multiple entries**: Duplicate records with slight variations
+- **Status changes**: "No Longer Attends", archived, or inactive members
+- **Family listings**: Person listed under spouse's or family name
+- **Nickname usage**: "Mike" instead of "Michael", "Beth" instead of "Elizabeth"
+
+## Effective Search Strategies
+
+### **Method 1: Profile Field Discovery (Most Accurate)**
+\`\`\`javascript
+// Step 1: Get all profile fields with their IDs
+breeze-chms:list_profile_fields()
+
+// Step 2: Use discovered field IDs for precise searches
+filter_json: {"field_id_123456": "John"}
+\`\`\`
+
+### **Method 2: Tag-Based Search (Most Reliable)**
+\`\`\`javascript
+// Step 1: List available tags
+breeze-chms:list_tags()
+
+// Step 2: Search by tag
+filter_json: {"tag_contains": "volunteer_team"}
+\`\`\`
+
+### **Method 3: Pagination Strategy (Most Comprehensive)**
+\`\`\`javascript
+// Systematic browsing with manual filtering
+breeze-chms:list_people({
+  "details": 1,
+  "limit": 100,
+  "offset": 0
+})
+// Continue with offset: 100, 200, 300...
+\`\`\`
+
+### **Method 4: Status-Based Searches**
+\`\`\`javascript
+// Search by membership status
+filter_json: {"status": "active_member"}
+// Common statuses: "Communing Member", "Regular Attender", "Visitor", "ESL"
+\`\`\`
+
+## Data Migration Best Practices
+
+### **Pre-Migration Assessment**
+
+1. **Inventory Current Data**
+   \`\`\`javascript
+   // Get complete member count
+   breeze-chms:list_people({"details": 0, "limit": 1})
+
+   // Analyze data structure
+   breeze-chms:list_profile_fields()
+
+   // Check existing tags and organization
+   breeze-chms:list_tags()
+   \`\`\`
+
+2. **Identify Data Quality Issues**
+   - Duplicate entries (same person multiple times)
+   - Incomplete records (missing emails, phones)
+   - Inconsistent data (address formats, phone formats)
+   - Outdated information (old addresses, disconnected phones)
+
+3. **Plan Data Mapping**
+   - Map source system fields to Breeze field IDs
+   - Define data transformation rules
+   - Identify required vs optional fields
+   - Plan family relationship structures
+
+### **Migration Execution Strategies**
+
+#### **Bulk Export for Analysis**
+\`\`\`javascript
+// Export all people in batches
+let allPeople = [];
+let offset = 0;
+const batchSize = 100;
+
+// Continue until no more records
+while (true) {
+  const batch = breeze-chms:list_people({
+    "details": 1,
+    "limit": batchSize,
+    "offset": offset
+  });
+
+  if (batch.length === 0) break;
+  allPeople = allPeople.concat(batch);
+  offset += batchSize;
+}
+\`\`\`
+
+#### **Family Structure Migration**
+\`\`\`javascript
+// Approach 1: Create individuals first, then families
+// 1. Create all individual people
+// 2. Use breeze-chms:create_family to group them
+// 3. Use breeze-chms:add_to_family for complex relationships
+
+// Approach 2: Create family heads first
+// 1. Identify family heads in source data
+// 2. Create head of household records
+// 3. Add spouses and children to existing families
+\`\`\`
+
+#### **Data Validation During Migration**
+\`\`\`javascript
+// Check for successful person creation
+const newPerson = breeze-chms:add_person({
+  "first": "John",
+  "last": "Smith",
+  "fields_json": JSON.stringify(additionalFields)
+});
+
+// Verify creation with get_person
+if (newPerson.id) {
+  const verification = breeze-chms:get_person({"person_id": newPerson.id});
+  // Confirm all data was saved correctly
+}
+\`\`\`
+
+### **Data Cleanup Operations**
+
+#### **Duplicate Detection and Merging**
+\`\`\`javascript
+// Strategy: Group by similar names and addresses
+// 1. Export all people with full details
+// 2. Group by last_name + first_name (fuzzy matching)
+// 3. Compare addresses, phones, emails for duplicates
+// 4. Manual review for merge decisions
+// 5. Use update operations to consolidate data
+// 6. Delete duplicate records after verification
+\`\`\`
+
+#### **Standardization Operations**
+\`\`\`javascript
+// Phone number standardization
+// Update to consistent format: (770) 555-1234
+const standardizePhone = (phone) => {
+  // Remove all non-digits, format consistently
+  const digits = phone.replace(/\\D/g, '');
+  return digits.length === 10 ?
+    \`(\${digits.slice(0,3)}) \${digits.slice(3,6)}-\${digits.slice(6)}\` :
+    phone;
+};
+
+// Address standardization
+// Consistent abbreviations: St., Ave., Dr., etc.
+// Proper capitalization and formatting
+\`\`\`
+
+## Event Management
+
+### **Event Series and Recurring Events**
+\`\`\`javascript
+// Create event series
+const parentEvent = breeze-chms:add_event({
+  "name": "Weekly Bible Study",
+  "starts_on": "2024-01-07 19:00:00",
+  "category_id": "123"
+});
+
+// Note: Breeze handles recurrence through UI, not API
+// API creates individual instances
+\`\`\`
+
+### **Attendance Tracking**
+\`\`\`javascript
+// Check someone into an event
+breeze-chms:checkin_person({
+  "person_id": "12345",
+  "instance_id": "67890",
+  "direction": "in"
+});
+
+// Get attendance reports
+breeze-chms:get_event_attendance({
+  "instance_id": "67890",
+  "details": true,
+  "type": "person"
+});
+\`\`\`
+
+### **Volunteer Management**
+\`\`\`javascript
+// Schedule volunteers for events
+breeze-chms:schedule_volunteer({
+  "instance_id": "67890",
+  "person_id": "12345"
+});
+
+// List volunteer roles
+breeze-chms:list_volunteers({
+  "instance_id": "67890"
+});
+\`\`\`
+
+## Contribution Management
+
+### **Recording Donations**
+\`\`\`javascript
+breeze-chms:add_contribution({
+  "date": "2024-01-15",
+  "person_json": JSON.stringify({
+    "name": "John Smith",
+    "email": "john@email.com"
+  }),
+  "method": "Check",
+  "funds_json": JSON.stringify([
+    {"name": "General Fund", "amount": 100.00},
+    {"name": "Missions", "amount": 25.00}
+  ]),
+  "amount": 125.00,
+  "batch_name": "Sunday Collection"
+});
+\`\`\`
+
+### **Batch Processing Contributions**
+\`\`\`javascript
+// Use consistent group and batch_name for related contributions
+const group = \`batch_\${Date.now()}\`;
+const batch_name = "Annual Giving Import";
+
+// Process each contribution with same group/batch
+contributions.forEach(contrib => {
+  breeze-chms:add_contribution({
+    ...contrib,
+    "group": group,
+    "batch_name": batch_name
+  });
+});
+\`\`\`
+
+## Advanced Data Operations
+
+### **Tag Management Strategy**
+\`\`\`javascript
+// Create organized tag structure
+// 1. Create tag folders for organization
+breeze-chms:add_tag_folder({"name": "Ministries"});
+breeze-chms:add_tag_folder({"name": "Life Stages"});
+breeze-chms:add_tag_folder({"name": "Skills"});
+
+// 2. Create specific tags within folders
+breeze-chms:add_tag({
+  "name": "Worship Team",
+  "folder_id": "ministries_folder_id"
+});
+
+// 3. Assign tags systematically
+breeze-chms:assign_tag({
+  "person_id": "12345",
+  "tag_id": "worship_team_tag_id"
+});
+\`\`\`
+
+### **Profile Field Analysis**
+\`\`\`javascript
+// Get all profile fields to understand data structure
+const fields = breeze-chms:list_profile_fields();
+
+// Analyze field types and usage
+fields.forEach(section => {
+  console.log(\`Section: \${section.name}\`);
+  section.fields.forEach(field => {
+    console.log(\`  Field: \${field.name} (ID: \${field.field_id})\`);
+    console.log(\`  Type: \${field.field_type}\`);
+    if (field.options) {
+      console.log(\`  Options: \${JSON.stringify(field.options)}\`);
+    }
+  });
+});
+\`\`\`
+
+### **Form and Survey Data**
+\`\`\`javascript
+// List all forms
+breeze-chms:list_forms({"is_archived": 0});
+
+// Get form responses
+breeze-chms:list_form_entries({"form_id": "123"});
+
+// Analyze form data for insights
+// Use for contact preferences, ministry interests, etc.
+\`\`\`
+
+## Error Handling and Recovery
+
+### **Common Error Patterns**
+\`\`\`javascript
+// 1. Rate limiting - implement delays between calls
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 2. Required field validation
+try {
+  const result = breeze-chms:add_person(personData);
+} catch (error) {
+  console.log("Missing required fields:", error.message);
+  // Check profile fields for requirements
+}
+
+// 3. Duplicate prevention
+// Always check if person exists before creating
+const existing = searchForExistingPerson(firstName, lastName);
+if (!existing) {
+  createNewPerson(personData);
+}
+\`\`\`
+
+### **Data Integrity Checks**
+\`\`\`javascript
+// Verify family relationships
+const family = person.family;
+if (family.length > 0) {
+  // Confirm all family members exist
+  family.forEach(member => {
+    const memberExists = breeze-chms:get_person({
+      "person_id": member.person_id
+    });
+    if (!memberExists) {
+      console.log(\`Broken family link: \${member.person_id}\`);
+    }
+  });
+}
+
+// Verify contact information
+if (person.details["1179914680"]) { // Email field
+  const emails = person.details["1179914680"];
+  emails.forEach(email => {
+    if (!isValidEmail(email.address)) {
+      console.log(\`Invalid email: \${email.address}\`);
+    }
+  });
+}
+\`\`\`
+
+## Best Practices for Large Operations
+
+### **Performance Optimization**
+- Use pagination with reasonable limits (50-100 records)
+- Implement delays between API calls to avoid rate limits
+- Cache profile field mappings to avoid repeated calls
+- Use batch operations where possible
+
+### **Data Consistency**
+- Always verify data after creation/updates
+- Maintain logs of all operations for audit trails
+- Use transactions conceptually (group related operations)
+- Implement rollback procedures for failed operations
+
+### **Security Considerations**
+- Never log sensitive data (emails, phones, addresses)
+- Implement proper access controls for migration scripts
+- Use environment variables for API credentials
+- Audit data access and modifications
+
+## Troubleshooting Guide
+
+### **Person Not Found Issues**
+1. Try alternate name spellings
+2. Search by partial names
+3. Check different status categories
+4. Look in family member lists
+5. Search by contact information
+6. Check archived/inactive records
+
+### **Data Import Failures**
+1. Validate required fields before import
+2. Check field ID mappings
+3. Verify data format compatibility
+4. Test with small batches first
+5. Implement detailed error logging
+
+### **Performance Problems**
+1. Reduce batch sizes
+2. Implement progressive delays
+3. Use more specific filters
+4. Avoid unnecessary field retrievals
+5. Cache repeated lookups
+
+Remember: The Breeze API is designed for structured data management, not free-text searching. Always work with the API's strengths and implement workarounds for its limitations.`;
   }
 
   private async makeApiRequest(endpoint: string, params: Record<string, any> = {}): Promise<any> {
     try {
-      // Add API key to params
-      const requestParams = { ...params, api_key: this.apiKey };
-      
-      const config: AxiosRequestConfig = {
-        url: `${this.baseUrl}${endpoint}`,
-        method: 'GET',
-        params: requestParams,
-        timeout: 30000,
-      };
+      // Normalize endpoint and forward params (API key is sent via header)
+      const requestParams = { ...params };
+      const normalizedEndpoint = endpoint.replace(/^\/+/, '');
 
-      const response = await axios(config);
+      if (this.debug) {
+        // Log without exposing the full API key
+        console.error(`[Breeze] Request -> GET ${this.apiClient.defaults.baseURL}${normalizedEndpoint}`);
+        console.error(`[Breeze] Headers -> { "Api-Key": "${this.maskApiKey(this.apiKey)}" }`);
+        console.error(`[Breeze] Params  -> ${JSON.stringify(requestParams)}`);
+      }
+
+      const startedAt = Date.now();
+      const response = await this.apiClient.get(normalizedEndpoint, { params: requestParams });
+      if (this.debug) {
+        const ms = Date.now() - startedAt;
+        console.error(`[Breeze] Response <- ${response.status} (${ms}ms) ${this.apiClient.defaults.baseURL}${normalizedEndpoint}`);
+      }
       return response.data;
     } catch (error: any) {
+      if (this.debug) {
+        const status = error?.response?.status;
+        const data = error?.response?.data;
+        console.error(`[Breeze] Error <- status=${status ?? 'n/a'} message=${error.message}`);
+        if (data) {
+          try {
+            console.error(`[Breeze] Error body: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
+          } catch {
+            // ignore JSON stringify issues
+          }
+        }
+      }
       throw new Error(`Breeze API request failed: ${error.response?.data?.message || error.message}`);
     }
   }
@@ -96,7 +535,7 @@ class BreezeChMSServer {
                   description: "Maximum number of people to return"
                 },
                 offset: {
-                  type: "number", 
+                  type: "number",
                   description: "Number of people to skip"
                 }
               }
@@ -110,8 +549,7 @@ class BreezeChMSServer {
               properties: {
                 person_id: {
                   type: "string",
-                  description: "The ID of the person to retrieve",
-                  required: true
+                  description: "The ID of the person to retrieve"
                 }
               },
               required: ["person_id"]
@@ -125,13 +563,11 @@ class BreezeChMSServer {
               properties: {
                 first: {
                   type: "string",
-                  description: "First name",
-                  required: true
+                  description: "First name"
                 },
                 last: {
-                  type: "string", 
-                  description: "Last name",
-                  required: true
+                  type: "string",
+                  description: "Last name"
                 },
                 fields_json: {
                   type: "string",
@@ -149,13 +585,11 @@ class BreezeChMSServer {
               properties: {
                 person_id: {
                   type: "string",
-                  description: "ID of person to update",
-                  required: true
+                  description: "ID of person to update"
                 },
                 fields_json: {
                   type: "string",
-                  description: "JSON string of fields to update",
-                  required: true
+                  description: "JSON string of fields to update"
                 }
               },
               required: ["person_id", "fields_json"]
@@ -169,8 +603,7 @@ class BreezeChMSServer {
               properties: {
                 person_id: {
                   type: "string",
-                  description: "ID of person to delete",
-                  required: true
+                  description: "ID of person to delete"
                 }
               },
               required: ["person_id"]
@@ -204,8 +637,7 @@ class BreezeChMSServer {
               properties: {
                 name: {
                   type: "string",
-                  description: "Name of the new tag",
-                  required: true
+                  description: "Name of the new tag"
                 },
                 folder_id: {
                   type: "string",
@@ -223,8 +655,7 @@ class BreezeChMSServer {
               properties: {
                 name: {
                   type: "string",
-                  description: "Name of the new folder",
-                  required: true
+                  description: "Name of the new folder"
                 },
                 parent_id: {
                   type: "string",
@@ -242,13 +673,11 @@ class BreezeChMSServer {
               properties: {
                 person_id: {
                   type: "string",
-                  description: "ID of person",
-                  required: true
+                  description: "ID of person"
                 },
                 tag_id: {
                   type: "string",
-                  description: "ID of tag to assign",
-                  required: true
+                  description: "ID of tag to assign"
                 }
               },
               required: ["person_id", "tag_id"]
@@ -262,13 +691,11 @@ class BreezeChMSServer {
               properties: {
                 person_id: {
                   type: "string",
-                  description: "ID of person",
-                  required: true
+                  description: "ID of person"
                 },
                 tag_id: {
                   type: "string",
-                  description: "ID of tag to remove",
-                  required: true
+                  description: "ID of tag to remove"
                 }
               },
               required: ["person_id", "tag_id"]
@@ -298,6 +725,14 @@ class BreezeChMSServer {
             }
           },
           {
+            name: "list_calendars",
+            description: "List all event calendars",
+            inputSchema: {
+              type: "object",
+              properties: {}
+            }
+          },
+          {
             name: "get_event",
             description: "Get details about a specific event instance",
             inputSchema: {
@@ -305,8 +740,7 @@ class BreezeChMSServer {
               properties: {
                 instance_id: {
                   type: "string",
-                  description: "Event instance ID",
-                  required: true
+                  description: "Event instance ID"
                 },
                 schedule: {
                   type: "boolean",
@@ -334,13 +768,11 @@ class BreezeChMSServer {
               properties: {
                 name: {
                   type: "string",
-                  description: "Event name",
-                  required: true
+                  description: "Event name"
                 },
                 starts_on: {
                   type: "string",
-                  description: "Start timestamp",
-                  required: true
+                  description: "Start timestamp"
                 },
                 category_id: {
                   type: "string",
@@ -358,19 +790,10 @@ class BreezeChMSServer {
               properties: {
                 instance_id: {
                   type: "string",
-                  description: "Event instance ID to delete",
-                  required: true
+                  description: "Event instance ID to delete"
                 }
               },
               required: ["instance_id"]
-            }
-          },
-          {
-            name: "list_calendars",
-            description: "List all event calendars",
-            inputSchema: {
-              type: "object",
-              properties: {}
             }
           },
 
@@ -383,13 +806,11 @@ class BreezeChMSServer {
               properties: {
                 person_id: {
                   type: "string",
-                  description: "Person ID",
-                  required: true
+                  description: "Person ID"
                 },
                 instance_id: {
                   type: "string",
-                  description: "Event instance ID",
-                  required: true
+                  description: "Event instance ID"
                 },
                 direction: {
                   type: "string",
@@ -409,8 +830,7 @@ class BreezeChMSServer {
               properties: {
                 instance_id: {
                   type: "string",
-                  description: "Event instance ID",
-                  required: true
+                  description: "Event instance ID"
                 },
                 details: {
                   type: "boolean",
@@ -450,8 +870,7 @@ class BreezeChMSServer {
               properties: {
                 form_id: {
                   type: "string",
-                  description: "Form ID",
-                  required: true
+                  description: "Form ID"
                 }
               },
               required: ["form_id"]
@@ -465,8 +884,7 @@ class BreezeChMSServer {
               properties: {
                 form_id: {
                   type: "string",
-                  description: "Form ID",
-                  required: true
+                  description: "Form ID"
                 }
               },
               required: ["form_id"]
@@ -482,8 +900,7 @@ class BreezeChMSServer {
               properties: {
                 instance_id: {
                   type: "string",
-                  description: "Event instance ID",
-                  required: true
+                  description: "Event instance ID"
                 }
               },
               required: ["instance_id"]
@@ -497,13 +914,11 @@ class BreezeChMSServer {
               properties: {
                 instance_id: {
                   type: "string",
-                  description: "Event instance ID",
-                  required: true
+                  description: "Event instance ID"
                 },
                 person_id: {
                   type: "string",
-                  description: "Person ID",
-                  required: true
+                  description: "Person ID"
                 }
               },
               required: ["instance_id", "person_id"]
@@ -517,13 +932,11 @@ class BreezeChMSServer {
               properties: {
                 instance_id: {
                   type: "string",
-                  description: "Event instance ID",
-                  required: true
+                  description: "Event instance ID"
                 },
                 person_id: {
                   type: "string",
-                  description: "Person ID",
-                  required: true
+                  description: "Person ID"
                 }
               },
               required: ["instance_id", "person_id"]
@@ -539,8 +952,7 @@ class BreezeChMSServer {
               properties: {
                 people_ids_json: {
                   type: "string",
-                  description: "JSON array of people IDs to connect",
-                  required: true
+                  description: "JSON array of people IDs to connect"
                 }
               },
               required: ["people_ids_json"]
@@ -554,8 +966,7 @@ class BreezeChMSServer {
               properties: {
                 people_ids_json: {
                   type: "string",
-                  description: "JSON array with at least one person ID from the family",
-                  required: true
+                  description: "JSON array with at least one person ID from the family"
                 }
               },
               required: ["people_ids_json"]
@@ -569,13 +980,11 @@ class BreezeChMSServer {
               properties: {
                 people_ids_json: {
                   type: "string",
-                  description: "JSON array of people IDs to add",
-                  required: true
+                  description: "JSON array of people IDs to add"
                 },
                 target_person_id: {
                   type: "string",
-                  description: "ID of someone in the target family",
-                  required: true
+                  description: "ID of someone in the target family"
                 }
               },
               required: ["people_ids_json", "target_person_id"]
@@ -589,8 +998,7 @@ class BreezeChMSServer {
               properties: {
                 people_ids_json: {
                   type: "string",
-                  description: "JSON array of people IDs to remove",
-                  required: true
+                  description: "JSON array of people IDs to remove"
                 }
               },
               required: ["people_ids_json"]
@@ -606,13 +1014,11 @@ class BreezeChMSServer {
               properties: {
                 date: {
                   type: "string",
-                  description: "Date of contribution (YYYY-MM-DD)",
-                  required: true
+                  description: "Date of contribution (YYYY-MM-DD)"
                 },
                 person_json: {
                   type: "string",
-                  description: "JSON with person info (name, email, etc.)",
-                  required: true
+                  description: "JSON with person info (name, email, etc.)"
                 },
                 uid: {
                   type: "string",
@@ -624,18 +1030,15 @@ class BreezeChMSServer {
                 },
                 method: {
                   type: "string",
-                  description: "Payment method (Check, Cash, etc.)",
-                  required: true
+                  description: "Payment method (Check, Cash, etc.)"
                 },
                 funds_json: {
                   type: "string",
-                  description: "JSON array of fund allocations",
-                  required: true
+                  description: "JSON array of fund allocations"
                 },
                 amount: {
                   type: "number",
-                  description: "Total contribution amount",
-                  required: true
+                  description: "Total contribution amount"
                 },
                 group: {
                   type: "string",
@@ -659,8 +1062,7 @@ class BreezeChMSServer {
               properties: {
                 action: {
                   type: "string",
-                  description: "Type of action to filter by",
-                  required: true
+                  description: "Type of action to filter by"
                 },
                 start: {
                   type: "string",
@@ -687,24 +1089,38 @@ class BreezeChMSServer {
               },
               required: ["action"]
             }
+          },
+
+          // System Prompt
+          {
+            name: "system-prompt",
+            description: "Get the comprehensive Breeze ChMS API system prompt with best practices, limitations, and troubleshooting guidance",
+            inputSchema: {
+              type: "object",
+              properties: {}
+            }
           }
         ] as Tool[]
       };
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
+      const { name } = request.params;
+      const args = request.params.arguments ?? {};
 
       try {
         let result: any;
-        
+
         switch (name) {
           // People Management
           case "list_people":
             result = await this.makeApiRequest("/people", args);
             break;
-          
+
           case "get_person":
+            if (!args || !args.person_id) {
+              throw new Error("get_person requires argument 'person_id'");
+            }
             result = await this.makeApiRequest(`/people/${args.person_id}`);
             break;
 
@@ -720,7 +1136,7 @@ class BreezeChMSServer {
             result = await this.makeApiRequest("/people/delete", args);
             break;
 
-          // Profile Fields  
+          // Profile Fields
           case "list_profile_fields":
             result = await this.makeApiRequest("/profile");
             break;
@@ -829,6 +1245,11 @@ class BreezeChMSServer {
             result = await this.makeApiRequest("/activity", args);
             break;
 
+          // System Prompt
+          case "system-prompt":
+            result = this.getSystemPrompt();
+            break;
+
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -846,7 +1267,7 @@ class BreezeChMSServer {
         return {
           content: [
             {
-              type: "text", 
+              type: "text",
               text: `Error: ${error instanceof Error ? error.message : String(error)}`
             }
           ],
