@@ -113,23 +113,26 @@ breeze-chms:list_tags()
 filter_json: {"tag_contains": "volunteer_team"}
 \`\`\`
 
-### **Method 3: Pagination Strategy (Most Comprehensive)**
+### **Method 3: Pagination Strategy (Only Reliable Name-Search Method)**
 \`\`\`javascript
-// Systematic browsing with manual filtering
+// list_people returns results alphabetically by last name.
+// Name-based filter_json keys (search_name, name_contains, first_name, last, etc.)
+// return false — name search via filter_json is NOT supported.
+// The only way to find someone by name is to paginate and scan manually.
 breeze-chms:list_people({
-  "details": 1,
-  "limit": 100,
+  "details": 0,   // use 0 (names + IDs only) for fast scanning
+  "limit": 200,
   "offset": 0
 })
-// Continue with offset: 100, 200, 300...
+// Continue with offset: 200, 400, 600... until response is an empty array.
 \`\`\`
 
-### **Method 4: Status-Based Searches**
+### **Method 4: Tag-Based Filter**
 \`\`\`javascript
-// Search by membership status
-filter_json: {"status": "active_member"}
-// Common statuses: "Communing Member", "Regular Attender", "Visitor", "ESL"
-\`\`\`
+// Filter by tag ID (use the numeric tag ID string, not the tag name)
+filter_json: {"tag_contains": "4550024"}
+// Returns [] (empty array) when no matches — not false.
+\`\`\`\`
 
 ## Data Migration Best Practices
 
@@ -197,17 +200,28 @@ while (true) {
 
 #### **Data Validation During Migration**
 \`\`\`javascript
-// Check for successful person creation
+// IMPORTANT: add_person only reliably saves multiple_choice (and similar simple) fields.
+// Contact fields (phone, email, address) must be set via a follow-up update_person call.
+
+// Step 1: Create with profile/status fields
 const newPerson = breeze-chms:add_person({
   "first": "John",
   "last": "Smith",
-  "fields_json": JSON.stringify(additionalFields)
+  "fields_json": JSON.stringify([
+    {"field_id": "218827608", "field_type": "multiple_choice", "response": "32"}
+  ])
 });
 
-// Verify creation with get_person
+// Step 2: Set contact fields separately
 if (newPerson.id) {
-  const verification = breeze-chms:get_person({"person_id": newPerson.id});
-  // Confirm all data was saved correctly
+  breeze-chms:update_person({
+    "person_id": newPerson.id,
+    "fields_json": JSON.stringify([
+      {"field_id": "1179914680", "field_type": "email_primary",  "response": "john@example.com"},
+      {"field_id": "984378195",  "field_type": "phone_mobile",   "response": "(555) 123-4567"},
+      {"field_id": "1279661039", "field_type": "address", "response": true, "details": {"street_address": "123 Main St", "city": "City", "state": "GA", "zip": "30000"}}
+    ])
+  });
 }
 \`\`\`
 
@@ -345,6 +359,41 @@ breeze-chms:assign_tag({
   "tag_id": "worship_team_tag_id"
 });
 \`\`\`
+
+### **fields_json Format Reference (Verified)**
+
+The \`fields_json\` parameter for \`add_person\` and \`update_person\` is a **JSON array** of field objects:
+\`\`\`json
+[{"field_id": "FIELD_ID", "field_type": "TYPE", "response": "VALUE"}, ...]
+\`\`\`
+
+**Confirmed working field_type names and response formats:**
+
+| field_type | response | details | Notes |
+|---|---|---|---|
+| \`multiple_choice\` | \`"OPTION_ID"\` (string) | — | The numeric option_id from list_profile_fields |
+| \`email_primary\` | \`"user@example.com"\` | — | Plain string shorthand (verified working) |
+| \`phone_mobile\` | \`"(555) 123-4567"\` | — | Plain string shorthand (verified working) |
+| \`address\` | \`true\` | \`{"street_address":"...","city":"...","state":"...","zip":"..."}\` | **Must use details object** — flat string breaks frontend |
+
+**Address format (REQUIRED — flat string causes broken display "1, 1 1"):**
+\`\`\`json
+{"field_id": "FIELD_ID", "field_type": "address", "response": true, "details": {"street_address": "123 Main St", "city": "Dallas", "state": "GA", "zip": "30132"}}
+\`\`\`
+
+**Alternative official formats (from Breeze API docs) that also work:**
+- Email: \`{"field_type": "email", "response": true, "details": {"address": "user@example.com"}}\`
+- Phone mobile: \`{"field_type": "phone", "response": true, "details": {"phone_mobile": "111-111-1111"}}\`
+- Phone home: \`{"field_type": "phone", "response": true, "details": {"phone_home": "222-222-2222"}}\`
+
+**Critical: do NOT use these — they are silently ignored:**
+- \`"field_type": "email"\` with a plain string response (no details object) → ignored
+- \`"field_type": "phone"\` with a plain string response (no details object) → ignored
+- \`"field_type": "address_primary"\` with a plain string response → **saves but renders broken on frontend**
+- Array responses: \`{"response": [{"address": "..."}]}\` → ignored
+
+**Critical: \`add_person\` only saves simple fields (e.g. multiple_choice).** Phone, email, and
+address must be set via a separate \`update_person\` call — they are silently ignored in \`add_person\`.
 
 ### **Profile Field Analysis**
 \`\`\`javascript

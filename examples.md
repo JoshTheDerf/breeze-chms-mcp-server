@@ -18,13 +18,27 @@ This document provides practical examples of how to use the Breeze ChMS MCP Serv
 
 ### 2. Add a New Person with Complete Information
 
+**IMPORTANT: `add_person` reliably sets profile fields (e.g. `multiple_choice` for status). Contact
+fields (phone, email, address) must be set in a subsequent `update_person` call — they are silently
+ignored when passed to `add_person`.**
+
 ```json
+// Step 1: Create the person with profile fields only
 {
   "tool": "add_person",
   "arguments": {
     "first": "Sarah",
     "last": "Johnson",
-    "fields_json": "[{\"field_id\":\"email_primary\",\"field_type\":\"email\",\"response\":true,\"details\":{\"address\":\"sarah.johnson@example.com\"}},{\"field_id\":\"phone_mobile\",\"field_type\":\"phone\",\"response\":true,\"details\":{\"phone_mobile\":\"555-123-4567\"}},{\"field_id\":\"address_primary\",\"field_type\":\"address\",\"response\":true,\"details\":{\"street_address\":\"123 Main St\",\"city\":\"Anytown\",\"state\":\"CA\",\"zip\":\"90210\"}}]"
+    "fields_json": "[{\"field_id\":\"218827608\",\"field_type\":\"multiple_choice\",\"response\":\"32\"}]"
+  }
+}
+
+// Step 2: Set contact fields using the returned person ID
+{
+  "tool": "update_person",
+  "arguments": {
+    "person_id": "<id from step 1>",
+    "fields_json": "[{\"field_id\":\"1179914680\",\"field_type\":\"email_primary\",\"response\":\"sarah.johnson@example.com\"},{\"field_id\":\"984378195\",\"field_type\":\"phone_mobile\",\"response\":\"(555) 123-4567\"},{\"field_id\":\"1279661039\",\"field_type\":\"address\",\"response\":true,\"details\":{\"street_address\":\"123 Main St\",\"city\":\"Anytown\",\"state\":\"CA\",\"zip\":\"90210\"}}]"
   }
 }
 ```
@@ -36,21 +50,27 @@ This document provides practical examples of how to use the Breeze ChMS MCP Serv
   "tool": "update_person",
   "arguments": {
     "person_id": "12345678",
-    "fields_json": "[{\"field_id\":\"email_primary\",\"field_type\":\"email\",\"response\":true,\"details\":{\"address\":\"newemail@example.com\"}}]"
+    "fields_json": "[{\"field_id\":\"1179914680\",\"field_type\":\"email_primary\",\"response\":\"newemail@example.com\"}]"
   }
 }
 ```
 
 ### 4. Search for People by Name
 
+**Name search via `filter_json` does NOT work — the API returns `false` for any name-based
+filter. To find a person by name, paginate through all records and scan manually:**
+
 ```json
 {
   "tool": "list_people",
   "arguments": {
-    "details": 1,
-    "filter_json": "{\"name_contains\": \"Smith\"}"
+    "details": 0,
+    "limit": 200,
+    "offset": 0
   }
 }
+// Repeat with offset: 200, 400, 600... until the response is an empty array.
+// Results are returned alphabetically by last name.
 ```
 
 ## Tag Management Examples
@@ -277,13 +297,22 @@ This document provides practical examples of how to use the Breeze ChMS MCP Serv
 ### 19. New Member Onboarding Workflow
 
 ```json
-// Step 1: Add the person
+// Step 1: Add the person (profile/status fields only)
 {
   "tool": "add_person",
   "arguments": {
     "first": "Michael",
     "last": "Wilson",
-    "fields_json": "[{\"field_id\":\"email_primary\",\"field_type\":\"email\",\"response\":true,\"details\":{\"address\":\"michael.wilson@example.com\"}}]"
+    "fields_json": "[{\"field_id\":\"218827608\",\"field_type\":\"multiple_choice\",\"response\":\"2\"}]"
+  }
+}
+
+// Step 1b: Set contact info via update_person (required — add_person ignores these)
+{
+  "tool": "update_person",
+  "arguments": {
+    "person_id": "<id from step 1>",
+    "fields_json": "[{\"field_id\":\"1179914680\",\"field_type\":\"email_primary\",\"response\":\"michael.wilson@example.com\"}]"
   }
 }
 
@@ -350,16 +379,25 @@ This document provides practical examples of how to use the Breeze ChMS MCP Serv
 
 ### 21. Import Contact List
 
-For bulk imports, you'd typically iterate through your data:
+For bulk imports, create the person first, then set contact fields separately:
 
 ```json
-// For each contact in your source data:
+// Step 1: For each contact in your source data:
 {
   "tool": "add_person",
   "arguments": {
     "first": "Contact_FirstName",
-    "last": "Contact_LastName", 
-    "fields_json": "[{\"field_id\":\"email_primary\",\"field_type\":\"email\",\"response\":true,\"details\":{\"address\":\"contact@example.com\"}},{\"field_id\":\"phone_mobile\",\"field_type\":\"phone\",\"response\":true,\"details\":{\"phone_mobile\":\"555-000-0000\"}}]"
+    "last": "Contact_LastName",
+    "fields_json": "[{\"field_id\":\"218827608\",\"field_type\":\"multiple_choice\",\"response\":\"STATUS_OPTION_ID\"}]"
+  }
+}
+
+// Step 2: Set contact info using the returned person ID
+{
+  "tool": "update_person",
+  "arguments": {
+    "person_id": "<id from step 1>",
+    "fields_json": "[{\"field_id\":\"1179914680\",\"field_type\":\"email_primary\",\"response\":\"contact@example.com\"},{\"field_id\":\"984378195\",\"field_type\":\"phone_mobile\",\"response\":\"(555) 000-0000\"},{\"field_id\":\"1279661039\",\"field_type\":\"address\",\"response\":true,\"details\":{\"street_address\":\"123 Main St\",\"city\":\"City\",\"state\":\"ST\",\"zip\":\"12345\"}}]"
   }
 }
 ```
@@ -393,13 +431,40 @@ To work with custom fields, you need their field IDs. Get them with:
 }
 ```
 
-Common field types and their structures:
+### Confirmed working field_type names and response formats
 
-- **Email**: `{"field_id":"123","field_type":"email","response":true,"details":{"address":"email@example.com"}}`
-- **Phone**: `{"field_id":"123","field_type":"phone","response":true,"details":{"phone_mobile":"555-123-4567"}}`  
-- **Address**: `{"field_id":"123","field_type":"address","response":true,"details":{"street_address":"123 Main St","city":"City","state":"ST","zip":"12345"}}`
-- **Date**: `{"field_id":"123","field_type":"date","response":"12/25/2024"}`
-- **Text**: `{"field_id":"123","field_type":"text","response":"Sample text"}`
+These are the field_type values and response shapes that **actually work** with `update_person`
+(verified through live testing):
+
+| field_type | response | details | Notes |
+|---|---|---|---|
+| `multiple_choice` | `"OPTION_ID"` (string) | — | Use the numeric option_id from `list_profile_fields` |
+| `email_primary` | `"user@example.com"` | — | Plain string shorthand (verified working) |
+| `phone_mobile` | `"(555) 123-4567"` | — | Plain string shorthand (verified working) |
+| `address` | `true` | `{"street_address":"...","city":"...","state":"...","zip":"..."}` | **Must use details object** |
+
+**Address format — CRITICAL:**
+```json
+{"field_id": "FIELD_ID", "field_type": "address", "response": true, "details": {"street_address": "123 Main St", "city": "Dallas", "state": "GA", "zip": "30132"}}
+```
+Using `"field_type": "address_primary"` with a flat string response saves data but **renders broken
+on the Breeze frontend** (displays as "Address / 1 / 1, 1 1"). Always use `"address"` + `details`.
+
+**What does NOT work:**
+- `"field_type": "email"` with a plain string response → silently ignored (need `details` object)
+- `"field_type": "phone"` with a plain string response → silently ignored (need `details` object)
+- `"field_type": "address_primary"` with a flat string → **saves but breaks frontend display**
+- Array responses: `{"response": [{"address": "..."}]}` → ignored
+
+**Example — updating multiple fields at once:**
+```json
+[
+  {"field_id": "218827608", "field_type": "multiple_choice", "response": "32"},
+  {"field_id": "1179914680", "field_type": "email_primary",  "response": "user@example.com"},
+  {"field_id": "984378195",  "field_type": "phone_mobile",   "response": "(770) 555-1234"},
+  {"field_id": "1279661039", "field_type": "address", "response": true, "details": {"street_address": "123 Main St", "city": "Dallas", "state": "GA", "zip": "30132"}}
+]
+```
 
 ## Rate Limiting Best Practices
 
